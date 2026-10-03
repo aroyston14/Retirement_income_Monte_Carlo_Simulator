@@ -1,30 +1,9 @@
-"""
-plots.py - Charts
-=================
-
-PURPOSE
-    All the matplotlib code lives here, so the other modules stay free
-    of plotting clutter.
-
-AIM (Phase 1)
-    - plot_pot(pot, start_age, save_path=None)
-          A line chart of pot value (y) against age (x).
-          Label the axes, format the y axis in GBP, add a title, and
-          mark the ruin age with a vertical line if there is one.
-          Save to outputs/ if save_path is given, otherwise show it.
-    - Optional: plot several scenarios on one chart (e.g. 3%, 5% and 7%
-      returns) to show sensitivity. This is a nice preview of Phase 2.
-
-LATER PHASES
-    Fan charts (percentile bands), histograms of the money left at
-    death, and charts comparing strategies.
-"""
 
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.ticker import FuncFormatter
 
-from retirement_mc.analytics import ruin_age 
+from retirement_mc.analytics import ruin_age, ruin_ages, prob_ruin, percentile_paths
 
 # Plotting projection
 def plot_pot(pot, start_age, save_path=None):
@@ -76,6 +55,11 @@ def _finish(fig, ax, ages, title, save_path):
     ax.set_ylim(bottom=0)
     ax.grid(alpha=0.3)
     ax.legend()
+    _save(fig, save_path)
+
+
+# Saves the chart if a path is given, otherwise opens it in a window
+def _save(fig, save_path):
     fig.tight_layout()
 
     if save_path is not None:
@@ -83,3 +67,71 @@ def _finish(fig, ax, ages, title, save_path):
         plt.close(fig)
     else:
         plt.show()
+
+
+# Stage 2: Monte Carlo charts. pots has shape (n_sims, n_years + 1)
+
+# Fan chart: percentile bands of the pot across all simulations, year by year
+def plot_fan_chart(pots, start_age, deterministic_pot=None, save_path=None):
+    ages = start_age + np.arange(pots.shape[1])
+    p5, p25, p50, p75, p95 = percentile_paths(pots, (5, 25, 50, 75, 95))
+
+    fig, ax = plt.subplots(figsize=(10, 6))
+    ax.fill_between(ages, p5, p95, color="tab:blue", alpha=0.15, label="5th–95th percentile")
+    ax.fill_between(ages, p25, p75, color="tab:blue", alpha=0.35, label="25th–75th percentile")
+    ax.plot(ages, p50, color="tab:blue", linewidth=2, label="Median")
+
+    if deterministic_pot is not None:
+        ax.plot(ages, deterministic_pot, color="black", linestyle="--", linewidth=1.5,
+                label="Deterministic (fixed return)")
+
+    p, low, high = prob_ruin(pots)
+    title = (f"Monte Carlo projection: {len(pots):,} simulations, "
+             f"P(ruin before {ages[-1]}) = {p:.1%}")
+    _finish(fig, ax, ages, title, save_path)
+    return fig, ax
+
+
+# A sample of individual simulated paths, to make the randomness visible
+def plot_sample_paths(pots, start_age, n_paths=50, save_path=None):
+    ages = start_age + np.arange(pots.shape[1])
+
+    fig, ax = plt.subplots(figsize=(10, 6))
+    for pot in pots[:n_paths]:
+        ax.plot(ages, pot, color="tab:blue", linewidth=0.8, alpha=0.3)
+    ax.plot(ages, np.median(pots, axis=0), color="black", linewidth=2,
+            label=f"Median of all {len(pots):,} simulations")
+
+    _finish(fig, ax, ages, f"{n_paths} simulated paths of the pension pot", save_path)
+    return fig, ax
+
+
+# Histogram of the age at which the pot runs out, as a % of ALL simulations
+def plot_ruin_age_histogram(pots, start_age, deterministic_pot=None, save_path=None):
+    ages = ruin_ages(pots, start_age)
+    ruined = ages[~np.isnan(ages)]
+    end_age = start_age + pots.shape[1] - 1
+    p, low, high = prob_ruin(pots)
+
+    fig, ax = plt.subplots(figsize=(10, 6))
+    bins = np.arange(start_age, end_age + 2) - 0.5          # one bar per whole age
+    weights = np.full(len(ruined), 100 / len(pots))          # each path = its share of all sims
+    ax.hist(ruined, bins=bins, weights=weights, color="tab:red", alpha=0.7,
+            edgecolor="white", label="Simulations running out at this age")
+
+    if deterministic_pot is not None:
+        det_age = ruin_age(deterministic_pot, start_age)
+        if det_age is not None:
+            ax.axvline(det_age, color="black", linestyle="--", linewidth=1.5,
+                       label=f"Deterministic ruin age ({det_age})")
+
+    ax.set_xlabel("Age at which the pot runs out")
+    ax.set_ylabel("% of all simulations")
+    ax.set_title(f"When does the money run out? P(ruin before {end_age}) = {p:.1%} "
+                 f"(95% CI {low:.1%}–{high:.1%})")
+    ax.yaxis.set_major_formatter(FuncFormatter(lambda value, _: f"{value:.1f}%"))
+    ax.set_xlim(start_age, end_age + 1)
+    ax.grid(alpha=0.3)
+    ax.legend()
+    _save(fig, save_path)
+    return fig, ax
